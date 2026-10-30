@@ -275,8 +275,10 @@ class UnifiAccessHub:
 
         # A hub serving more than one door (e.g. a UGT driving a gate and a
         # pedestrian door) reports the building as its location_id, so the
-        # loop above can't match it to a door. When it is the only hub, every
-        # hub-bound door still unmapped must be one of its doors.
+        # loop above can't match it to a door. Its websocket device update
+        # maps it exactly (see _apply_port_settings); until that arrives, or
+        # in polling mode, a sole hub must serve every hub-bound door still
+        # unmapped.
         unplaced_hubs = [
             device
             for device in devices
@@ -634,6 +636,8 @@ class UnifiAccessHub:
         device_type = update.data.device_type
         door_id = update.data.door.unique_id if update.data.door else None
 
+        updated = self._apply_port_settings(device_id, device_type, update.data)
+
         if door_id and door_id in self.doors:
             state = self.doors[door_id]
             if state.hub_id is None and self._may_be_door_hub(device_id):
@@ -646,7 +650,52 @@ class UnifiAccessHub:
                     device_type,
                     device_id,
                 )
-                self._notify_doors_updated()
+                updated = True
+
+        if updated:
+            self._notify_doors_updated()
+
+    def _apply_port_settings(
+        self, device_id: str, device_type: str, data: Any
+    ) -> bool:
+        """Map doors to a hub from the port settings in its device update.
+
+        A hub's ``access.data.device.update`` lists, per output port, the door
+        wired to it (``extensions`` entries named ``port_setting``). This is
+        the only place the Access API ties a door to a hub that reports the
+        building as its location, such as a UGT serving a gate and a door.
+        Returns True if a door's hub changed.
+        """
+        extensions = getattr(data, "extensions", None)
+        if not isinstance(extensions, list):
+            return False
+
+        updated = False
+        for extension in extensions:
+            if (
+                not isinstance(extension, dict)
+                or extension.get("extension_name") != "port_setting"
+                or extension.get("target_type") != "door"
+            ):
+                continue
+            state = self.doors.get(extension.get("target_value", ""))
+            if state is None or (state.hub_id, state.hub_type) == (
+                device_id,
+                device_type,
+            ):
+                continue
+            state.hub_id = device_id
+            state.hub_type = device_type
+            _LOGGER.debug(
+                "Door %s (%s) wired to %s of hub %s (%s)",
+                state.name,
+                state.id,
+                extension.get("source_id"),
+                device_type,
+                device_id,
+            )
+            updated = True
+        return updated
 
     async def _handle_logs_add(self, msg: WebsocketMessage) -> None:
         """Handle access log messages.

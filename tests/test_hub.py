@@ -779,6 +779,70 @@ class TestHubWebSocketHandlers:
         assert hub.doors["door-001"].hub_id is None
         hub.on_doors_updated.assert_not_called()
 
+    async def test_handle_device_update_maps_doors_from_port_settings(
+        self, hub: UnifiAccessHub
+    ) -> None:
+        """A hub's port settings map every door wired to it, overriding guesses."""
+        hub.doors["door-001"].hub_id = "camera-001"
+        hub.doors["door-001"].hub_type = "UVC G6 Instant"
+        hub.doors["door-002"].hub_id = None
+        hub.doors["door-002"].hub_type = None
+
+        msg = MagicMock()
+        msg.data.unique_id = "hub-gate-001"
+        msg.data.device_type = "UGT"
+        msg.data.door = None
+        msg.data.extensions = [
+            {
+                "extension_name": "port_setting",
+                "source_id": "port1",
+                "target_type": "door",
+                "target_value": "door-001",
+            },
+            {
+                "extension_name": "port_setting",
+                "source_id": "port2",
+                "target_type": "door",
+                "target_value": "door-002",
+            },
+            {
+                "extension_name": "port_setting",
+                "source_id": "port3",
+                "target_type": "door",
+                "target_value": "door-unknown",
+            },
+            {"extension_name": "other", "target_type": "door", "target_value": "x"},
+        ]
+
+        await hub._handle_device_update(msg)
+
+        for door_id in ("door-001", "door-002"):
+            assert hub.doors[door_id].hub_id == "hub-gate-001"
+            assert hub.doors[door_id].hub_type == "UGT"
+        hub.on_doors_updated.assert_called_once()
+
+    async def test_handle_device_update_port_settings_unchanged(
+        self, hub: UnifiAccessHub
+    ) -> None:
+        """Port settings that match the current mapping don't notify."""
+        msg = MagicMock()
+        msg.data.unique_id = "hub-ugt-001"
+        msg.data.device_type = "UGT"
+        msg.data.door = None
+        msg.data.extensions = [
+            {
+                "extension_name": "port_setting",
+                "source_id": "port1",
+                "target_type": "door",
+                "target_value": "door-001",
+            },
+        ]
+
+        await hub._handle_device_update(msg)
+
+        assert hub.doors["door-001"].hub_id == "hub-ugt-001"
+        hub.on_doors_updated.assert_not_called()
+
     async def test_handle_location_update_legacy(
         self, hub: UnifiAccessHub, mock_api_client: AsyncMock
     ) -> None:
